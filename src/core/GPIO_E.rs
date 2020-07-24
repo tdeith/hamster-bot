@@ -2,16 +2,16 @@
 
 pub use cortex_m::{
     Peripherals as ctxPeripherals,
-    interrupt,
-    Mutex,
+    interrupt::{self, Mutex},
 };
-pub use stm32f4::GPIOE;
+pub use stm32f4::GPIOE as GPIOE_register;
 
-use core::{Cell, RefCell};
+use core::cell::{Cell, RefCell};
 use super::{
     peripheral::STM_PERIPHERAL,
     power::POWER,
 };
+use core::borrow::BorrowMut;
 
 
 enum Status {
@@ -22,54 +22,52 @@ enum Status {
 
 static STATUS: Mutex<Cell<Status>> = Mutex::new(Cell::new(Status::Offline));
 
-static GPIOE: Mutex<RefCell<GPIOE>> =
-    Mutex::new(RefCell::new(STM_PERIPHERAL.borrow().GPIOE));
+pub static GPIO_E: Mutex<RefCell<GPIOE_register>> =
+    Mutex::new(RefCell::new(STM_PERIPHERAL.borrow_mut().as_ptr().GPIOE));
 
 #[interrupt]
 pub fn begin_init() {
     interrupt::free(|cs| {
-        let mut status_mut = STATUS.borrow();
+        let mut status_mut = STATUS.borrow(cs);
         if status_mut != Status::Offline {
             panic!("Cannot re-initialize GPIOE");
         }
         status_mut.replace(Status::Initializing);
 
         // power on the GPIOE peripheral
-        let mut power = POWER.borrow().as_mut_ref();
+        let mut power = POWER.borrow(cs).as_mut_ref();
         power.ahbenr.modify(|_, pin| pin.iopeen().set_bit());
     });
 }
 
 #[interrupt]
 pub fn write_config(config: F)
-    where F: RunOnce<GPIOE, &mut GPIOE>
+    where F: RunOnce<GPIOE_register, &mut GPIOE_register>
 {
     interrupt::free(|cs| {
-        let mut status_mut = STATUS.borrow();
+        let mut status_mut = STATUS.borrow(cs);
         if status_mut != Status::Initializing {
             panic!("Must be initializing GPIOE to write config");
         }
-        let mut gpioe = GPIOE.borrow().as_mut_ref();
-        GPIOE.moder.modify(config);
+        GPIO_E.borrow(cs).as_mut_ref().moder.modify(config);
     });
 }
 
 #[interrupt]
 pub fn close_init() {
     interrupt::free(|cs| {
-        let mut status_mut = STATUS.borrow();
+        let mut status_mut = STATUS.borrow(cs);
         if status_mut != Status::Initializing {
             panic!("Not currently initializing GPIOE");
         }
-        let mut gpioe = GPIOE.borrow().as_mut_ref();
         status_mut.replace(Status::Ready);
     });
 }
 
-pub fn get_device() -> &'static mut GPIOE {
-    let mut status_mut = STATUS.borrow();
+pub fn get_device() -> &'static mut GPIOE_register {
+    let mut status_mut = STATUS.borrow(cs);
     if status_mut != Status::Ready {
         panic!("GPIOE not initialized");
     }
-    GPIOE.borrow().as_mut_ref()
+    GPIO_E.borrow(cs).as_mut_ref()
 }

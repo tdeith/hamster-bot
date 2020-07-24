@@ -2,17 +2,16 @@
 
 pub use cortex_m::{
     Peripherals as ctxPeripherals,
-    interrupt,
-    Mutex,
-    CriticalSection,
+    interrupt::{self, Mutex},
 };
-pub use stm32f4::GPIOA as GPIOA_REGISTER;
+pub use stm32f4::GPIOA as GPIOA_register;
 
-use core::{Cell, RefCell};
+use core::cell::{Cell, RefCell};
 use super::{
     peripheral::STM_PERIPHERAL,
     power::POWER,
 };
+use core::borrow::BorrowMut;
 
 
 enum Status {
@@ -23,61 +22,52 @@ enum Status {
 
 static STATUS: Mutex<Cell<Status>> = Mutex::new(Cell::new(Status::Offline));
 
-static GPIOA: Mutex<RefCell<GPIOA_REGISTER>> =
-    Mutex::new(RefCell::new(STM_PERIPHERAL.borrow().GPIOA));
+pub static GPIO_A: Mutex<RefCell<GPIOA_register>> =
+    Mutex::new(RefCell::new(STM_PERIPHERAL.borrow_mut().as_ptr().GPIOA));
 
 #[interrupt]
 pub fn begin_init() {
     interrupt::free(|cs| {
-        let mut status_mut = STATUS.borrow();
+        let mut status_mut = STATUS.borrow(cs);
         if status_mut != Status::Offline {
             panic!("Cannot re-initialize GPIOA");
         }
         status_mut.replace(Status::Initializing);
 
         // power on the GPIOA peripheral
-        let mut power = POWER.borrow().as_mut_ref();
-        power.ahbanr.modify(|_, pin| pin.iopeen().set_bit());
+        let mut power = POWER.borrow(cs).as_mut_ref();
+        power.ahbenr.modify(|_, pin| pin.iopeen().set_bit());
     });
 }
 
 #[interrupt]
 pub fn write_config(config: F)
-    where F: RunOnce<GPIOA, &mut GPIOA>
+    where F: RunOnce<GPIOA_register, &mut GPIOA_register>
 {
     interrupt::free(|cs| {
-        let mut status_mut = STATUS.borrow();
+        let mut status_mut = STATUS.borrow(cs);
         if status_mut != Status::Initializing {
             panic!("Must be initializing GPIOA to write config");
         }
-        let mut gpioa = GPIOA.borrow(cs).as_ptr();
-        gpioa.moder.modify(config);
+        GPIO_A.borrow(cs).as_mut_ref().moder.modify(config);
     });
 }
 
 #[interrupt]
 pub fn close_init() {
     interrupt::free(|cs| {
-        let mut status_mut = STATUS.borrow();
+        let mut status_mut = STATUS.borrow(cs);
         if status_mut != Status::Initializing {
             panic!("Not currently initializing GPIOA");
         }
-        let mut gpioa = GPIOA.borrow(cs).as_ptr();
         status_mut.replace(Status::Ready);
     });
 }
 
-#[interrupt]
-pub fn write_pins(f: F)
-    where F: FnOnce<&mut GPIOA_REGISTER>
-{
-    interrupt::free(|cs| {
-        let mut status_mut = STATUS.borrow();
-        if status_mut != Status::Ready {
-            panic!("GPIOA not initialized");
-        }
-        let mut gpioa = GPIOA.borrow(cs).as_ptr();
-        gpioa.odr.write(f);
-    });
+pub fn get_device() -> &'static mut GPIOA_register {
+    let mut status_mut = STATUS.borrow(cs);
+    if status_mut != Status::Ready {
+        panic!("GPIOA not initialized");
+    }
+    GPIO_A.borrow(cs).as_mut_ref()
 }
-
